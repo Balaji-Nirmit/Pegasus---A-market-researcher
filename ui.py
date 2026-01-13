@@ -9,6 +9,7 @@ This file is responsible ONLY for:
 """
 
 import markdown
+from pdf_exporter import export_markdown_to_pdf
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
@@ -242,10 +243,39 @@ class PegasusTerminal(QMainWindow):
         self.log("SUCCESS", "Master Strategic Report Generation Finalized.")
 
     def save_report(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Report", "Pegasus_Report.md", "Markdown (*.md)"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Report",
+            "Pegasus_Report",
+            "Markdown (*.md);;PDF (*.pdf)",
         )
-        if path:
+
+        if not path:
+            return
+
+        title = f"Pegasus Intelligence Report: {self.input_subject.text()}"
+
+        # Normalize extension
+        if "Markdown" in selected_filter:
+            if not path.lower().endswith(".md"):
+                path = path.rsplit(".", 1)[0] + ".md"
+
             with open(path, "w", encoding="utf-8") as f:
-                f.write(self.full_report_accumulator)
-            QMessageBox.information(self, "Success", "Report exported successfully.")
+                f.write(f"# {title}\n\n")
+            f.write(self.full_report_accumulator)
+
+        elif "PDF" in selected_filter:
+            if not path.lower().endswith(".pdf"):
+                path = path.rsplit(".", 1)[0] + ".pdf"
+
+            export_markdown_to_pdf(
+                filename=path,
+                title=title,
+                markdown_text=self.full_report_accumulator,
+            )
+
+        QMessageBox.information(
+            self,
+            "Success",
+            f"Report exported successfully:\n{path}",
+        )
