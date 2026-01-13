@@ -114,48 +114,64 @@ class RecursiveSectionalAgent(QThread):
 
                 raw_texts = []
 
-                self.vector_sources[query] = []
-
+                # ---- Search ----
                 try:
                     results = DDGS().text(
-                        query, max_results=config.MAX_SOURCES_PER_VECTOR
+                        query,
+                        max_results=config.MAX_SOURCES_PER_VECTOR
+                    ) or []
+                except Exception as e:
+                    self.log_sig.emit("WARN", f"Search failed: {e}")
+                    results = []
+
+                # ---- Fetch URLs safely ----
+                for result in results:
+                    url = result.get("href")
+                    if not url:
+                        continue
+
+                    self.url_sig.emit(query, url)
+
+                try:
+                    fetched = trafilatura.fetch_url(
+                        url,
+                        timeout=10,
+                        no_ssl=True
                     )
 
-                    for result in results:
-                        url = result.get("href")
-                        if not url:
-                            continue
+                    if not fetched:
+                        raise ValueError("Empty response")
 
-                        self.url_sig.emit(query, url)
-                        self.vector_sources[query].append(url)
-                        fetched = trafilatura.fetch_url(url)
-                        extracted = trafilatura.extract(fetched)
+                    extracted = trafilatura.extract(fetched)
 
-                        if extracted:
-                            raw_texts.append(
-                                extracted[: config.MAX_CHARS_PER_SOURCE]
-                            )
-                except Exception:
-                    pass
+                    if extracted:
+                        raw_texts.append(
+                            extracted[: config.MAX_CHARS_PER_SOURCE]
+                        )
 
+                except Exception as e:
+                    self.log_sig.emit(
+                        "WARN",
+                        f"Skipped URL (fetch failed): {url} | {e}"
+                    )
+                    continue
+
+                # ---- Summarize vector ----
                 if raw_texts:
                     summarize_prompt = (
                         f"Summarize the core intelligence for the query '{query}' "
-                        "based on the following sources:\n" + "\n".join(raw_texts)
+                        "based on the following sources:\n"
+                        + "\n".join(raw_texts)
                     )
 
-                    summary_resp = self.client.chat(
-                        self.model,
-                        messages=[{"role": "user", "content": summarize_prompt}],
+                    summary_resp = self.safe_chat(
+                        messages=[{"role": "user", "content": summarize_prompt}]
                     )
 
                     intel_text = summary_resp["message"]["content"]
                     self.vector_intel_sig.emit(query, intel_text)
-                    sources = self.vector_sources.get(query, [])
-
-                    citation_block = "\n".join(f"- {url}" for url in sources)
                     self.vector_summaries.append(
-                        f"RESEARCH DATA FOR {query}:\n{intel_text}\n\nSOURCES:\n{citation_block}"
+                        f"RESEARCH DATA FOR {query}: {intel_text}"
                     )
 
                 progress = int(((idx + 1) / len(queries)) * 50)
@@ -221,3 +237,24 @@ class RecursiveSectionalAgent(QThread):
 
         except Exception as exc:
             self.log_sig.emit("ERROR", f"Agent Error: {exc}")
+        
+def run_agent_sync(target: str):
+    """
+    Run Pegasus agent synchronously (for CLI usage).
+    Returns the final markdown report.
+    """
+    agent = RecursiveSectionalAgent(target)
+
+    # Collect outputs
+    report_sections = []
+
+    def collect_section(title, content):
+        report_sections.append(f"## {title}\n\n{content}\n\n")
+
+    agent.master_section_sig.connect(collect_section)
+
+    # Run directly (no QThread start)
+    agent.run()
+
+    return "".join(report_sections)
+
