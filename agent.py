@@ -46,6 +46,8 @@ class RecursiveSectionalAgent(QThread):
 
         self.model = config.PRIMARY_MODEL
         self.vector_summaries = []
+        self.vector_sources = {}
+
     
     def safe_chat(self, messages, retries=2):
         """Call Ollama with retries and fallback."""
@@ -112,6 +114,8 @@ class RecursiveSectionalAgent(QThread):
 
                 raw_texts = []
 
+                self.vector_sources[query] = []
+
                 try:
                     results = DDGS().text(
                         query, max_results=config.MAX_SOURCES_PER_VECTOR
@@ -123,6 +127,7 @@ class RecursiveSectionalAgent(QThread):
                             continue
 
                         self.url_sig.emit(query, url)
+                        self.vector_sources[query].append(url)
                         fetched = trafilatura.fetch_url(url)
                         extracted = trafilatura.extract(fetched)
 
@@ -146,8 +151,11 @@ class RecursiveSectionalAgent(QThread):
 
                     intel_text = summary_resp["message"]["content"]
                     self.vector_intel_sig.emit(query, intel_text)
+                    sources = self.vector_sources.get(query, [])
+
+                    citation_block = "\n".join(f"- {url}" for url in sources)
                     self.vector_summaries.append(
-                        f"RESEARCH DATA FOR {query}: {intel_text}"
+                        f"RESEARCH DATA FOR {query}:\n{intel_text}\n\nSOURCES:\n{citation_block}"
                     )
 
                 progress = int(((idx + 1) / len(queries)) * 50)
