@@ -6,13 +6,15 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLineEdit, QTextEdit, QLabel, QProgressBar, QFrame, QSplitter, QTabWidget,
     QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QScrollArea, QGridLayout,
-    QGroupBox, QSizePolicy
+    QGroupBox, QSizePolicy, QDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QPixmap
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 import plotly.graph_objects as go
-
+from bs4 import BeautifulSoup
+import pydot
+import os
 # ---------------------------
 # Worker: Recursive Sectional Agent
 # ---------------------------
@@ -22,7 +24,7 @@ class RecursiveSectionalAgent(QThread):
     url_sig = pyqtSignal(str, str)
     vector_intel_sig = pyqtSignal(str, str)
     master_section_sig = pyqtSignal(str, str)
-    knowledge_sig = pyqtSignal(str, str)
+    analytical_sig = pyqtSignal(str, str)
     chart_sig = pyqtSignal(str, object)
     image_sig = pyqtSignal(str, str)
     progress_sig = pyqtSignal(int)
@@ -33,7 +35,7 @@ class RecursiveSectionalAgent(QThread):
         self.target = target
         self.client = Client(
             host='https://ollama.com',
-            headers={'Authorization': 'Bearer 0f41c7912f3846888987a122ed1bdcf9.uq5Df8dGGbEZ1q_eSq946vsL'}
+            headers={'Authorization': 'Bearer '+os.environ.get('OLLAMA_API_KEY')}
         )
         self.model = 'gpt-oss:120b'
         self.vector_summaries = []
@@ -70,7 +72,7 @@ class RecursiveSectionalAgent(QThread):
                         text = re.sub('<[^<]+?>', '', data)  # basic strip html
                         if text: raw_texts.append(text[:2000])
                         imgs = re.findall(r'<img.*?src=["\'](.*?)["\']', data, re.IGNORECASE)
-                        image_links.extend(imgs[:2])
+                        image_links.extend(imgs[:2])                        
                 except: pass
 
                 if raw_texts:
@@ -83,7 +85,22 @@ class RecursiveSectionalAgent(QThread):
 
                     self.vector_intel_sig.emit(q, intel_txt)
                     self.vector_summaries.append(f"{q}: {intel_txt}")
-                    self.knowledge_sig.emit(q, intel_txt.split('.')[0])  # first sentence as summary
+                    
+                    self.log_sig.emit("SYSTEM PROCESSING", "Working on the analytical map...")
+
+                    analytical_prompt = (
+                        "You must output ONLY a valid Mermaid diagram for the content below.\n"
+                        "Always start with 'mindmap'"
+"root((Main Topic))"
+"  Child1"
+"    Subchild (with parentheses if long)"
+"Use exactly 2 spaces per indent level"
+"Wrap all node text in ( )"
+"No long run-on lines; break into hierarchy"
+                        f"{q}\n\n"
+                        + "\n".join(intel_txt))
+                    analytical_intel = self.client.chat(self.model, messages=[{'role':'user','content':analytical_prompt}])
+                    self.analytical_sig.emit(q, analytical_intel['message']['content'])  # first sentence as summary
 
                 self.progress_sig.emit(int(((idx+1)/len(queries))*50))
 
@@ -139,7 +156,7 @@ class RecursiveSectionalAgent(QThread):
             self.chart_sig.emit("Moat", fig4)
 
             self.finished_sig.emit()
-            self.log_sig.emit("SUCCESS", "All sections, charts, and knowledge maps generated.")
+            self.log_sig.emit("SUCCESS", "All sections, charts, and analytical maps generated.")
 
         except Exception as e:
             self.log_sig.emit("ERROR", f"Agent Error: {str(e)}")
@@ -155,6 +172,7 @@ class PegasusTerminal(QMainWindow):
         self.resize(1900, 1000)
         self.query_nodes = {}
         self.full_report_accumulator = ""
+        self.analytical_seen = set()
         self.init_ui()
         self.apply_styles()
 
@@ -209,18 +227,18 @@ class PegasusTerminal(QMainWindow):
         center_layout.addWidget(self.center_tabs)
         splitter.addWidget(center_widget)
 
-        # Right Tabs: Knowledge Map + Charts + Images
+        # Right Tabs: analytical Map + Charts + Images
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         self.right_tabs = QTabWidget()
 
-        # Knowledge Map
+        # analytical Map
         self.kmap_scroll = QScrollArea()
         self.kmap_container = QWidget()
         self.kmap_layout = QVBoxLayout(self.kmap_container)
         self.kmap_scroll.setWidgetResizable(True)
         self.kmap_scroll.setWidget(self.kmap_container)
-        self.right_tabs.addTab(self.kmap_scroll, "Knowledge Map")
+        self.right_tabs.addTab(self.kmap_scroll, "analytical Map")
 
         # Charts
         self.charts_tabs = QTabWidget()
@@ -282,9 +300,10 @@ class PegasusTerminal(QMainWindow):
         self.full_report_accumulator = ""
         self.btn_run.setEnabled(False)
         self.btn_save.setEnabled(False)
+        self.analytical_seen.clear()
         self.prog.show()
 
-        # Clear previous knowledge map, images
+        # Clear previous analytical map, images
         for i in reversed(range(self.kmap_layout.count())):
             self.kmap_layout.itemAt(i).widget().deleteLater()
         for i in reversed(range(self.image_layout.count())):
@@ -296,7 +315,7 @@ class PegasusTerminal(QMainWindow):
         self.worker.url_sig.connect(self.add_url_node)
         self.worker.vector_intel_sig.connect(self.stream_vector_insight)
         self.worker.master_section_sig.connect(self.stream_master_section)
-        self.worker.knowledge_sig.connect(self.add_knowledge_card)
+        self.worker.analytical_sig.connect(self.add_analytical_card)
         self.worker.chart_sig.connect(self.display_chart)
         self.worker.image_sig.connect(self.add_image)
         self.worker.progress_sig.connect(self.prog.setValue)
@@ -378,17 +397,142 @@ class PegasusTerminal(QMainWindow):
         """
         self.report_view.setHtml(master_style + html_body)
 
-    def add_knowledge_card(self,title,summary):
-        group = QGroupBox(title)
-        group.setStyleSheet("background:#161b22; color:#ffaa00; border-radius:5px; padding:5px; margin:3px;")
-        layout = QVBoxLayout(group)
-        lbl = QLabel(summary)
-        lbl.setWordWrap(True)
-        layout.addWidget(lbl)
-        group.setCheckable(True)
-        group.setChecked(False)
-        self.kmap_layout.addWidget(group)
+    def add_analytical_card(self, title, summary):
+        import re
+        from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLabel
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
+        from PyQt5.QtCore import QUrl
+        import pydot
 
+        key = (title + summary).lower()
+        if key in self.analytical_seen:
+            return
+        self.analytical_seen.add(key)
+
+        # Try to extract mermaid-like structure or fallback to text summary
+        match = re.search(r"```mermaid\s*(.*?)```", summary, re.DOTALL | re.IGNORECASE)
+        if not match:
+            self.log("WARNING", f"No diagram block in {title}")
+            # Fallback: show raw summary as text
+            lbl = QLabel(summary[:800] + "...")
+            lbl.setWordWrap(True)
+            box = QGroupBox(title)
+            layout = QVBoxLayout(box)
+            layout.addWidget(lbl)
+            self.kmap_layout.addWidget(box)
+            return
+
+        raw_text = match.group(1).strip()
+
+        # Very basic parser: assume first line is root, then indented children
+        lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+        if not lines:
+            return
+
+        root_label = lines[0].replace("mindmap", "").replace("root", "").strip("() ").strip() or title
+
+        graph = pydot.Dot(graph_type='graph', rankdir='TB', bgcolor='transparent')
+        root_node = pydot.Node("root", label=root_label, shape="ellipse", style="filled", fillcolor="#ffaa0044", fontcolor="white")
+        graph.add_node(root_node)
+
+        current_parent = root_node
+        prev_indent = 0
+
+        for line in lines[1:]:
+            indent = len(line) - len(line.lstrip())
+            label = line.strip().strip("()[]").strip()
+
+            if not label:
+                continue
+
+            node = pydot.Node(label[:60], label=label, shape="box", style="rounded,filled", fillcolor="#0f1117", fontcolor="#e0e0e0", fontsize="12")
+            graph.add_node(node)
+            graph.add_edge(pydot.Edge(current_parent, node))
+
+            if indent > prev_indent:
+                current_parent = node  # go deeper
+            elif indent < prev_indent:
+                # go up - simplistic, may need stack for real trees
+                current_parent = root_node
+            prev_indent = indent
+
+        try:
+            svg_str = graph.create_svg().decode('utf-8')
+        except Exception as e:
+            self.log("ERROR", f"Graphviz failed: {e}")
+            svg_str = f"<pre>{summary[:500]}</pre>"
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="margin:0; background:transparent; padding:12px;">
+            {svg_str}
+        </body>
+        </html>
+        """
+
+        box = QGroupBox(title)
+        box.setCheckable(True)
+        box.setChecked(False)
+        layout = QVBoxLayout(box)
+
+        view = QWebEngineView()
+        view.setMinimumHeight(500)
+        view.setHtml(html, QUrl("about:blank"))
+
+        layout.addWidget(view)
+        self.kmap_layout.addWidget(box)  
+
+
+
+    def normalize_mermaid_mindmap(self, code):
+        lines = [line.rstrip() for line in code.splitlines() if line.strip() and not line.strip().startswith('//')]
+
+        if not lines or not lines[0].strip().lower().startswith('mindmap'):
+            lines.insert(0, 'mindmap')
+
+        # Force root if missing or malformed
+        if len(lines) > 1 and not lines[1].startswith((' ', '\t')):
+            root_text = lines[1].strip('root()').strip(')').strip('(').strip()
+            lines[1] = f'  root(({root_text}))'
+
+        # Try to indent child lines properly (very crude – assumes long lines are children)
+        fixed = []
+        current_indent = 0
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith(('root', 'mindmap')):
+                fixed.append(line)
+                continue
+
+            # Count leading spaces/tabs
+            indent_level = len(line) - len(stripped)
+            if indent_level == 0:
+                # No indent → make it level 2 under root
+                fixed.append('  ' + stripped)
+            elif indent_level % 2 != 0:
+                # Odd indent → normalize to 2 spaces per level
+                level = indent_level // 2 + 1
+                fixed.append('  ' * level + stripped)
+            else:
+                fixed.append(line)
+
+        # Ensure nodes have ( ) if missing (mindmap requirement for most nodes)
+        final = []
+        for line in fixed:
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith(('root', 'mindmap')) and '(' not in stripped:
+                # Very naive: wrap the whole text in ( )
+                parts = stripped.split(None, 1)
+                if len(parts) > 1:
+                    line = line.replace(stripped, parts[0] + f'({parts[1]})')
+                else:
+                    line = line.replace(stripped, f'({stripped})')
+            final.append(line)
+
+        normalized = '\n'.join(final)
+        return normalized
     def display_chart(self,name,fig):
         html = fig.to_html(include_plotlyjs='cdn', full_html=False)
         if name in self.chart_views:
@@ -402,8 +546,20 @@ class PegasusTerminal(QMainWindow):
             data = requests.get(url, timeout=5).content
             pix.loadFromData(data)
             lbl.setPixmap(pix.scaledToWidth(250,Qt.SmoothTransformation))
+            lbl.mousePressEvent = lambda e, d=data: self.popup_image(d)
         except: pass
         self.image_layout.addWidget(lbl)
+    
+    def popup_image(self, data):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Image Viewer")
+        v = QVBoxLayout(dlg)
+        lbl = QLabel()
+        pix = QPixmap()
+        pix.loadFromData(data)
+        lbl.setPixmap(pix.scaledToWidth(500, Qt.SmoothTransformation))
+        v.addWidget(lbl)
+        dlg.exec_()
 
     def on_complete(self):
         self.btn_run.setEnabled(True)
@@ -421,7 +577,7 @@ class PegasusTerminal(QMainWindow):
 
     def log(self,tag,msg):
         ts = datetime.now().strftime("%H:%M:%S")
-        self.log_box.append(f"<font color='#ffaa00'>[{ts}] <b>{tag}:</b></font> {msg}")
+        self.log_box.append(f"<font color='#ffaa00'>[{ts}] <b>{tag}:</b></font> <font color='green'>{msg}</font>")
 
 
 # ---------------------------
