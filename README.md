@@ -46,7 +46,8 @@ Pegasus is a next-generation market research tool that leverages local LLMs (via
    ```bash
    pip install -r requirements.txt
    ```
-3. **Run the Application:**
+3. **Do not forget the ollama cloud api**
+4. **Run the Application:**
 
 ### Screenshots
 
